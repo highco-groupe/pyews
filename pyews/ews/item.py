@@ -1,3 +1,4 @@
+# -*- coding: utf-8 -*-
 ##
 ## Created : Wed Apr 02 18:02:51 IST 2014
 ##
@@ -27,7 +28,7 @@ from    pyews.ews.data  import MapiPropertyTypeType, MapiPropertyTypeTypeInv
 import  xml.etree.ElementTree as ET
 from    xml.sax.saxutils import escape
 import  logging
-
+import pdb
 gnd = SoapClient.get_node_detail
 
 class ReadOnly:
@@ -193,7 +194,7 @@ class ExtendedProperty(Field):
 
         def init_from_xml (self, node):
             """
-            None is a parsed xml node (Element). Extract the data that we can
+            Node is a parsed xml node (Element). Extract the data that we can
             from the node.
             """
 
@@ -666,10 +667,9 @@ class Item(Field):
 
         for child in rnode:
             tag = unQName(child.tag)
-
             if tag == 'ItemId':
-                self.itemid.value = child.attrib['Id']
-                self.change_key.value = child.attrib['ChangeKey']
+                self.itemid.set(child.attrib['Id'])
+                self.change_key.set(child.attrib['ChangeKey'])
             elif tag == 'ParentFolderId':
                 self.parent_fid = ParentFolderId(child.attrib['Id'])
                 self.parent_fck = ParentFolderChangeKey(child.attrib['ChangeKey'])

@@ -1,3 +1,4 @@
+# -*- coding: utf-8 -*-
 ##
 ## Created : Sun Mar 16 21:07:35 IST 2014
 ##
@@ -22,6 +23,7 @@ from   requests.auth import HTTPBasicAuth
 import xml.etree.ElementTree as ET
 import utils
 from   utils import pretty_xml
+import pdb
 
 E_NAMESPACE = 'http://schemas.microsoft.com/exchange/services/2006/errors'
 M_NAMESPACE = 'http://schemas.microsoft.com/exchange/services/2006/messages'
@@ -61,31 +63,32 @@ class SoapConnectionError(Exception):
     pass
 
 class SoapClient(object):
-    def __init__ (self, service_url, user, pwd):
+    def __init__ (self, service_url, user, pwd, cert=False):
         self.url = service_url
         self.user = user
         self.pwd = pwd
         self.auth = HTTPBasicAuth(user, pwd)
+        self.cert = cert
 
-    def send (self, request, debug=False):
+    def send (self, request, debug=True):
         """
         Send the given rquest to the server, and return the response text as
         well as a parsed node object as a (resp.text, node) tuple.
 
         The response text is the raw xml including the soap headers and stuff.
         """
-
         try:
-            r = requests.post(self.url, auth=self.auth, data=request,
+            r = requests.post(self.url, auth=self.auth, data=request.encode('utf-8'),
                               headers={'Content-Type':'text/xml; charset=utf-8',
-                                       "Accept": "text/xml"})
+                                       "Accept": "text/xml"},
+                              verify=self.cert)
         except requests.exceptions.ConnectionError as e:
             raise SoapConnectionError(e)
 
         if debug:
-            logging.debug('%s', pretty_xml(r.text))
+            logging.debug('%s', pretty_xml(r.text.encode('utf-8')))
 
-        return SoapClient.parse_xml(r.text)
+        return SoapClient.parse_xml(r.text.encode('utf-8'))
 
     @staticmethod
     def parse_xml (soap_resp):

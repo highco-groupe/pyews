@@ -1,3 +1,4 @@
+# -*- coding: utf-8 -*-
 ##
 ## Created : Thu May 01 11:00:15 IST 2014
 ##
@@ -16,7 +17,7 @@
 ##
 ## You should have a copy of the license in the doc/ directory of pyews.  If
 ## not, see <http://www.gnu.org/licenses/>.
-
+import pdb
 import logging
 import xml.etree.ElementTree as ET
 import pyews.utils as utils
@@ -52,7 +53,8 @@ class Request(object):
     ## Public methods
     ##
 
-    def request_server (self, debug=False):
+    def request_server (self, debug=True):
+        #pdb.set_trace()
         r = self.ews.loader.load(self.template).generate(**self.kwargs)
         r = utils.pretty_xml(r)
 
@@ -100,7 +102,8 @@ class Response(object):
             self.fault_code = fault.find('faultcode').text
             self.fault_str  = fault.find('faultstring').text
             self.has_faults = True
-
+            logging.error('Fault %s found in request : %s' % (self.fault_code,
+                                                              self.fault_str))
             raise EWSMessageError(self)
 
     def parse_for_errors (self, tag, succ_func=None):
@@ -115,6 +118,7 @@ class Response(object):
         assert self.node is not None
 
         i = 0
+        #pdb.set_trace()
         for gfrm in self.node.iter(tag):
             resp_class = gfrm.attrib['ResponseClass']
             if resp_class == 'Error':
@@ -175,13 +179,14 @@ class GetFolderRequest(Request):
     def __init__ (self, ews, **kwargs):
         Request.__init__(self, ews, template=utils.REQ_BIND_FOLDER)
         self.kwargs = kwargs
+        self.kwargs.update({'primary_smtp_address':ews.primary_smtp_address})
 
     ##
     ## Implement the abstract methods
     ##
 
     def execute (self):
-        self.resp_node = self.request_server(debug=False)
+        self.resp_node = self.request_server(debug=True)
         self.resp_obj = GetFolderResponse(self, self.resp_node)
 
         return self.resp_obj
@@ -211,6 +216,7 @@ class CreateItemsRequest(Request):
     def __init__ (self, ews, **kwargs):
         Request.__init__(self, ews, template=utils.REQ_CREATE_ITEM)
         self.kwargs = kwargs
+        self.kwargs.update({'primary_smtp_address':ews.primary_smtp_address})
 
     ##
     ## Implement the abstract methods
@@ -247,6 +253,18 @@ class CreateItemsResponse(Response):
         item.itemid.set(itemid)
         item.change_key.set(ck)
 
+    def _get_items(self):
+        "Returns items provided to in the request to create remote records"
+        
+        items = self.req.kwargs['items'] or []
+        return items
+    
+    def get_itemids(self):
+        return {item.itemid.value:item.change_key.value for item in self._get_items()}
+
+        
+        
+    
 ##
 ## DeleteItems
 ##
@@ -255,6 +273,7 @@ class DeleteItemsRequest(Request):
     def __init__ (self, ews, **kwargs):
         Request.__init__(self, ews, template=utils.REQ_DELETE_ITEM)
         self.kwargs = kwargs
+        self.kwargs.update({'primary_smtp_address':ews.primary_smtp_address})
 
     ##
     ## Implement the abstract methods
@@ -288,13 +307,14 @@ class FindFoldersRequest(Request):
     def __init__ (self, ews, **kwargs):
         Request.__init__(self, ews, template=utils.REQ_FIND_FOLDER_ID)
         self.kwargs = kwargs
+        self.kwargs.update({'primary_smtp_address':ews.primary_smtp_address})
 
     ##
     ## Implement the abstract methods
     ##
 
     def execute (self):
-        self.resp_node = self.request_server(debug=False)
+        self.resp_node = self.request_server(debug=True)
         self.resp_obj = FindFoldersResponse(self, self.resp_node)
 
         return self.resp_obj
@@ -329,13 +349,14 @@ class FindItemsRequest(Request):
     def __init__ (self, ews, **kwargs):
         Request.__init__(self, ews, template=utils.REQ_FIND_ITEM)
         self.kwargs = kwargs
+        self.kwargs.update({'primary_smtp_address':ews.primary_smtp_address})
 
     ##
     ## Implement the abstract methods
     ##
 
     def execute (self):
-        self.resp_node = self.request_server(debug=False)
+        self.resp_node = self.request_server(debug=True)
         self.resp_obj = FindItemsResponse(self, self.resp_node)
 
         return self.resp_obj
@@ -368,6 +389,7 @@ class FindItemsLMTRequest(Request):
     def __init__ (self, ews, **kwargs):
         Request.__init__(self, ews, template=utils.REQ_FIND_ITEM_LMT)
         self.kwargs = kwargs
+        self.kwargs.update({'primary_smtp_address':ews.primary_smtp_address})
 
     ##
     ## Implement the abstract methods
@@ -375,7 +397,7 @@ class FindItemsLMTRequest(Request):
 
     def execute (self):
         print '*** WTF: ', self.kwargs
-        self.resp_node = self.request_server(debug=False)
+        self.resp_node = self.request_server(debug=True)
         self.resp_obj = FindItemsLMTResponse(self, self.resp_node)
 
         return self.resp_obj
@@ -399,6 +421,43 @@ class FindItemsLMTResponse(Response):
         ## loops.
         for cxml in self.node.iter(QName_T('Contact')):
             self.items.append(Contact(self, resp_node=cxml))
+##
+## GetContacts
+##
+
+class GetContactsRequest(Request):
+    def __init__ (self, ews, **kwargs):
+        Request.__init__(self, ews, template=utils.REQ_GET_CONTACT)
+        self.kwargs = kwargs
+        self.kwargs.update({'primary_smtp_address':ews.primary_smtp_address})
+
+    ##
+    ## Implement the abstract methods
+    ##
+
+    def execute (self):
+        self.resp_node = self.request_server(debug=True)
+        self.resp_obj = GetContactsResponse(self, self.resp_node)
+
+        return self.resp_obj
+
+class GetContactsResponse(Response):
+    def __init__ (self, req, node=None):
+        Response.__init__(self, req, node)
+
+        if node is not None:
+            self.init_from_node(node)
+
+    def init_from_node (self, node):
+        """
+        node is a parsed XML Element containing the response
+        """
+
+        self.parse_for_errors(QName_M('GetItemResponseMessage'))
+
+        self.items = []
+        for cxml in self.node.iter(QName_T('Contact')):
+            self.items.append(Contact(self, resp_node=cxml))
 
 ##
 ## GetItems
@@ -408,6 +467,7 @@ class GetItemsRequest(Request):
     def __init__ (self, ews, **kwargs):
         Request.__init__(self, ews, template=utils.REQ_GET_ITEM)
         self.kwargs = kwargs
+        self.kwargs.update({'primary_smtp_address':ews.primary_smtp_address})
 
     ##
     ## Implement the abstract methods
@@ -452,6 +512,7 @@ class UpdateItemsRequest(Request):
     def __init__ (self, ews, **kwargs):
         Request.__init__(self, ews, template=utils.REQ_UPDATE_ITEM)
         self.kwargs = kwargs
+        self.kwargs.update({'primary_smtp_address':ews.primary_smtp_address})
 
         self.items_map = {}
         for item in self.kwargs['items']:
@@ -462,7 +523,7 @@ class UpdateItemsRequest(Request):
     ##
 
     def execute (self):
-        self.resp_node = self.request_server(debug=False)
+        self.resp_node = self.request_server(debug=True)
         self.resp_obj = UpdateItemsResponse(self, self.resp_node)
         self.update_change_keys()
 
@@ -508,6 +569,7 @@ class SyncFolderItemsRequest(Request):
     def __init__ (self, ews, **kwargs):
         Request.__init__(self, ews, template=utils.REQ_SYNC_FOLDER)
         self.kwargs = kwargs
+        self.kwargs.update({'primary_smtp_address':ews.primary_smtp_address})
 
         self.items_map = {}
 
@@ -516,7 +578,7 @@ class SyncFolderItemsRequest(Request):
     ##
 
     def execute (self):
-        self.resp_node = self.request_server(debug=False)
+        self.resp_node = self.request_server(debug=True)
         self.resp_obj = SyncFolderItemsResponse(self, self.resp_node)
 
         return self.resp_obj

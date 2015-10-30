@@ -1,3 +1,4 @@
+# -*- coding: utf-8 -*-
 #!/usr/bin/python
 ##
 ## Created : Wed Mar 05 11:28:41 IST 2014
@@ -19,7 +20,7 @@
 ## not, see <http://www.gnu.org/licenses/>.
 
 import logging, re
-
+import pdb
 import utils
 from   utils            import pretty_xml
 from   ews.autodiscover import EWSAutoDiscover, ExchangeAutoDiscoverError
@@ -31,6 +32,7 @@ from   ews.folder       import Folder
 from   ews.contact      import Contact
 
 from ews.request_response import GetItemsRequest, GetItemsResponse
+from ews.request_response import GetContactsRequest, GetContactsResponse
 from ews.request_response import FindItemsRequest, FindItemsResponse
 from ews.request_response import CreateItemsRequest, CreateItemsResponse
 from ews.request_response import DeleteItemsRequest, DeleteItemsResponse
@@ -55,12 +57,13 @@ class InvalidUserEmail(Exception):
     pass
 
 class WebCredentials(object):
-    def __init__ (self, user, pwd):
+    def __init__ (self, user, pwd, cert=False):
         self.user = user
         self.pwd  = pwd
+        self.cert  = cert
 
 class ExchangeService(object):
-    def __init__ (self):
+    def __init__(self):
         self.ews_ad = None
         self.credentials = None
         self.root_folder = None
@@ -92,7 +95,7 @@ class ExchangeService(object):
         logging.info('Sending folder create request to EWS...')
         req = self._render_template(utils.REQ_CREATE_FOLDER,
                                     parent_folder_id=parent_id,
-                                    folders=info)
+                                    folders=info,primary_smtp_address=self.primary_smtp_address)
         try:
             resp, node = self.send(req)
         except SoapMessageError as e:
@@ -204,6 +207,23 @@ class ExchangeService(object):
 
         return ret
 
+    def GetContacts (self, contact_ids, eprops_xml=[]):
+        """
+        contact_ids is an array of exchange contact ids, and we will fetch that
+        stuff and return an array of Item objects.
+
+        @FIXME: Need to make this work in batches to ensure data is not too
+        much.
+        """
+
+        logging.info('pimdb_ex:GetItems() - fetching items....')
+        req = GetContactsRequest(self, contact_ids=contact_ids,
+                              custom_eprops_xml=eprops_xml)
+        resp = req.execute()
+        logging.info('pimdb_ex:GetItems() - fetching items...done')
+
+        return resp.items
+
     def GetItems (self, itemids, eprops_xml=[]):
         """
         itemids is an array of itemids, and we will fetch that stuff and
@@ -227,9 +247,10 @@ class ExchangeService(object):
         logging.info('pimdb_ex:CreateItems() - creating items....')
         req = CreateItemsRequest(self, folder_id=folder_id, items=items)
         resp = req.execute()
-
+         
         logging.info('pimdb_ex:CreateItems() - creating items....done')
-
+        return resp
+        
     def DeleteItems (self, itemids):
         """Delete items in the exchange store."""
 
@@ -277,10 +298,12 @@ class ExchangeService(object):
     ##
 
     def init_soap_client (self):
-        self.soap = SoapClient(self.Url, user=self.credentials.user,
-                               pwd=self.credentials.pwd)
+        self.soap = SoapClient(self.Url, 
+                               user=self.credentials.user,
+                               pwd=self.credentials.pwd,
+                               cert=self.credentials.cert)
 
-    def send (self, req, debug=False):
+    def send (self, req, debug=True):
         """
         Will raise a SoapConnectionError if there is a connection problem.
         """
