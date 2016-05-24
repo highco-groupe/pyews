@@ -45,6 +45,19 @@ from ews.request_response import (MoveItemsRequest,
 from ews.request_response import UpdateItemsRequest, UpdateItemsResponse
 from ews.request_response import (SyncFolderItemsRequest,
                                   SyncFolderItemsResponse)
+from ews.request_response import (FindCalendarItemsRequest,
+                                  FindCalendarItemsResponse)
+from ews.request_response import (GetCalendarItemsRequest,
+                                  GetCalendarItemsResponse)
+from ews.request_response import (FindCalendarItemsRequestBothDate,
+                                  FindCalendarItemsResponseBothDate)
+from ews.request_response import (FindCalendarItemsRequestDate,
+                                  FindCalendarItemsResponseDate)
+from ews.request_response import GetAttachmentsRequest
+from ews.request_response import CreateAttachmentRequest
+from ews.request_response import DeleteAttachmentRequest
+from ews.request_response import UpdateCalendarItemsRequest
+
 
 from tornado import template
 from soap import SoapClient, SoapMessageError, QName_T
@@ -114,7 +127,7 @@ class ExchangeService(object):
             folders=info,
             primary_smtp_address=self.primary_smtp_address)
         try:
-            resp, node = self.send(req)
+            resp = self.send(req)
         except SoapMessageError as e:
             raise EWSMessageError(e.resp_code, e.xml_resp, e.node)
 
@@ -141,6 +154,108 @@ class ExchangeService(object):
             raise EWSMessageError(e.resp_code, e.xml_resp, e.node)
 
         return resp
+
+    def FindCalendarItemsByBothDate(self, folder, start_date, end_date,
+                                    eprops_xml=[], ids_only=False):
+        """
+
+        """
+        req = FindCalendarItemsRequestBothDate(self, folder_id=folder.Id,
+                                               start_date=start_date,
+                                               end_date=end_date)
+        ret = []
+        resp = req.execute()
+        shells = resp.items
+        if shells is not None and len(shells) > 0:
+            ret += shells
+        if len(ret) > 0 and not ids_only:
+            return self.GetCalendarItems([x.itemid for x in ret],
+                                         eprops_xml=eprops_xml)
+        else:
+            return ret
+
+    def FindCalendarItemsByDate(self, folder, start=None, end=None,
+                                eprops_xml=[], ids_only=False):
+        """
+
+        """
+        req = False
+        if start is None and end is None:
+            return self.FindCalendarItems(folder, eprops_xml=eprops_xml,
+                                          ids_only=ids_only)
+        elif start and end:
+            return self.FindCalendarItemsByBothDate(folder=folder,
+                                                    start_date=start,
+                                                    end_date=end,
+                                                    eprops_xml=eprops_xml,
+                                                    ids_only=ids_only)
+        else:
+            # Either start or end is not None
+            i = 0
+            ret = []
+            while True:
+                req = FindCalendarItemsRequestDate(
+                    self,
+                    batch_size=self.batch_size(),
+                    offset=i,
+                    folder_id=folder.Id,
+                    start_date=start,
+                    end_date=end
+                )
+                resp = req.execute()
+                shells = resp.items
+                if shells is not None and len(shells) > 0:
+                    ret += shells
+
+                if resp.includes_last:
+                    break
+
+                i += self.batch_size()
+                # just a safety net to avoid inifinite loops
+                if i >= folder.TotalCount:
+                    break
+            if len(ret) > 0 and not ids_only:
+                return self.GetCalendarItems([x.itemid for x in ret],
+                                             eprops_xml=eprops_xml)
+            else:
+                return ret
+
+    def FindCalendarItems(self, folder, eprops_xml=[], ids_only=False):
+        """
+
+        """
+        logging.info('pimdb_ex:FindCalendarItems() - '
+                     'fetching items in folder %s...',
+                     folder.DisplayName)
+        i = 0
+        ret = []
+        while True:
+            req = FindCalendarItemsRequest(self, batch_size=self.batch_size(),
+                                           offset=i, folder_id=folder.Id)
+            resp = req.execute()
+            shells = resp.items
+            if shells is not None and len(shells) > 0:
+                ret += shells
+
+            if resp.includes_last:
+                break
+
+            i += self.batch_size()
+            # just a safety net to avoid inifinite loops
+            if i >= folder.TotalCount:
+                logging.warning('pimdb_ex.FindCalendarItems():'
+                                'Breaking strange loop')
+                break
+
+        logging.info('pimdb_ex:FindCalendarItems() - '
+                     'fetching items in folder %s...done',
+                     folder.DisplayName)
+
+        if len(ret) > 0 and not ids_only:
+            return self.GetCalendarItems([x.itemid for x in ret],
+                                         eprops_xml=eprops_xml)
+        else:
+            return ret
 
     def FindItems(self, folder, eprops_xml=[], ids_only=False):
         """
@@ -267,6 +382,16 @@ class ExchangeService(object):
 
         return ret
 
+    def GetCalendarItems(self, calendar_item_ids, eprops_xml=[]):
+        logging.info('pimdb_ex:GetCalendarItems() - fetching items....')
+        req = GetCalendarItemsRequest(self,
+                                      calendar_item_ids=calendar_item_ids,
+                                      custom_eprops_xml=eprops_xml)
+        resp = req.execute()
+        logging.info('pimdb_ex:GetCalendarItems() - fetching items...done')
+
+        return resp.items
+
     def GetContacts(self, contact_ids, eprops_xml=[]):
         """
         contact_ids is an array of exchange contact ids, and we will fetch that
@@ -325,14 +450,65 @@ class ExchangeService(object):
 
         return Id, CK
 
+    def CreateCalendarItem(self,
+                           folder_id,
+                           item,
+                           send_meeting_invitations="SendToNone"):
+        logging.info('pimdb_ex:CreateCalendarItem() - creating one item....')
+        req = CreateItemsRequest(
+            self,
+            folder_id=folder_id,
+            items=[item],
+            send_meeting_invitations=send_meeting_invitations
+        )
+
+        resp = req.execute()
+
+        logging.info('pimdb_ex:CreateCalendarItem() - creating items....done')
+        resp_dict = resp.get_itemids()
+        # as we only gave one item to create, we can use [0]
+        Id = resp_dict.keys()[0]
+        CK = resp_dict[Id]
+        logging.info('pimdb_ex:CreateCalendarItem() '
+                     '- RETURN VALUES: %s %s' % (Id, CK))
+
+        return Id, CK
+
+    def CreateAttachment(self, item, attachment):
+        req = CreateAttachmentRequest(self, item=item, attachment=attachment)
+        return req.execute()
+
+    def DeleteAttachments(self, items):
+        req = DeleteAttachmentRequest(self, items=items)
+        return req.execute()
+
+    def DeleteCalendarItems(self, itemids,
+                            send_meeting_cancellations="SendToNone"):
+        logging.info('pimdb_ex:DeleteCalendarItems() - deleting items....')
+        req = DeleteItemsRequest(
+            self, itemids=itemids,
+            calendar=True,
+            send_meeting_cancellations=send_meeting_cancellations
+        )
+        logging.info('pimdb_ex:DeleteCalendarItems() - deleting items....done')
+        return req.execute()
+
     def DeleteItems(self, itemids):
         """Delete items in the exchange store."""
 
         logging.info('pimdb_ex:DeleteItems() - deleting items....')
-        req = DeleteItemsRequest(self, itemids=itemids)
+        req = DeleteItemsRequest(self, itemids=itemids, calendar=False)
         logging.info('pimdb_ex:DeleteItems() - deleting items....done')
 
         return req.execute()
+
+    def GetAttachments(self, items):
+        """
+        Retrieve specified attachment ids
+        """
+        req = GetAttachmentsRequest(self, items=items)
+        resp = req.execute()
+        return resp.items
 
     def MoveItems(self, folder_id, itemids):
         """Move items in the exchange store."""
@@ -355,6 +531,24 @@ class ExchangeService(object):
         resp = req.execute()
 
         logging.info('pimdb_ex:UpdateItems() - updating items....done')
+        return resp.items
+
+    def UpdateCalendarItems(self, items,
+                            send_meeting_invitations="SendToNone"):
+        """
+        Fetch updates from the specified folder_id.
+        Items in the exchange store.
+        """
+
+        logging.info('pimdb_ex:UpdateCalendarItems() - updating items....')
+
+        req = UpdateCalendarItemsRequest(
+            self,
+            items=items,
+            send_meeting_invitations=send_meeting_invitations)
+        resp = req.execute()
+
+        logging.info('pimdb_ex:UpdateCalendarItems() - updating items....done')
         return resp.items
 
     def SyncFolderItems(self, folder_id, sync_state):

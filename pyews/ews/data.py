@@ -3,6 +3,9 @@
 # Created : Fri Mar 28 22:47:40 IST 2014
 ##
 # Copyright (C) 2014 Sriram Karra <karra.etc@gmail.com>
+#
+# Author: Damien Crier
+# Copyright 2016 Camptocamp SA
 ##
 # This file is part of pyews
 ##
@@ -24,13 +27,24 @@
 ##
 
 import mapitags
-from pyews.soap import SoapClient, SoapMessageError, QName_M
 
 # perhaps this is not required?
 
 
 class WellKnownFolderName:
     MsgFolderRoot = 'msgfolderroot'
+
+
+class BaseProperties:
+    @classmethod
+    def _props(cls):
+        return [i for i in cls.__dict__.keys() if i[:1] != '_']
+
+    @classmethod
+    def _props_values(cls):
+        return [
+            getattr(cls, i) for i in cls._props() if isinstance(i, basestring)
+        ]
 
 
 class DistinguishedFolderId:
@@ -69,7 +83,7 @@ class FolderClass:
     Contacts = 'IPF.Contact'
     Journals = 'IPF.Journal'
     Tasks = 'IPF.Task'
-    Calendars = 'IPF.Calendar'
+    Calendars = 'IPF.Appointment'
     Notes = 'IPF.Note'
 
 
@@ -80,6 +94,115 @@ class ItemClass:
     DistList = 'IPM.DistList'
     Note = 'IPM.Note'
     Task = 'IPM.Task'
+
+
+class SensitivityType(BaseProperties):
+    """
+    https://msdn.microsoft.com/en-us/library/office/aa565687(v=exchg.140).aspx
+    """
+    Normal = 'Normal'
+    Personal = 'Personal'
+    Private = 'Private'
+    Confidential = 'Confidential'
+
+
+class ImportanceType(BaseProperties):
+    """
+    https://msdn.microsoft.com/en-us/library/office/aa563467(v=exchg.140).aspx
+    """
+    Low = 'Low'
+    Normal = 'Normal'
+    High = 'High'
+
+
+class LegacyFreeBusyStatusType(BaseProperties):
+    """
+    https://msdn.microsoft.com/en-us/library/office/aa566143(v=exchg.140).aspx
+    """
+    Free = 'Free'
+    Tentative = 'Tentative'
+    Busy = 'Busy'
+    OOF = 'OOF'
+    NoData = 'NoData'
+
+
+class CalendarItemTypeType(BaseProperties):
+    """
+    https://msdn.microsoft.com/en-us/library/office/aa494158(v=exchg.140).aspx
+    """
+    Single = 'Single'
+    Occurrence = 'Occurrence'
+    Except = 'Exception'  # because Exception is a Python keyword
+    RecurringMaster = 'RecurringMaster'
+
+
+class ConferenceTypeType(BaseProperties):
+    """
+    https://msdn.microsoft.com/en-us/library/office/aa563529(v=exchg.140).aspx
+    """
+    NetMeeting = '0'
+    NetShow = '1'
+    Chat = '2'
+
+
+class ResponseTypeType(BaseProperties):
+    """
+    https://msdn.microsoft.com/en-us/library/office/aa564248(v=exchg.140).aspx
+    """
+    Unknown = 'Unknown'
+    Organizer = 'Organizer'
+    Tentative = 'Tentative'
+    Accept = 'Accept'
+    Decline = 'Decline'
+    NoResponseReceived = 'NoResponseReceived'
+
+
+class DaysOfWeekBaseType(BaseProperties):
+    Sunday = 'Sunday'
+    Monday = 'Monday'
+    Tuesday = 'Tuesday'
+    Wednesday = 'Wednesday'
+    Thursday = 'Thursday'
+    Friday = 'Friday'
+    Saturday = 'Saturday'
+
+
+class DaysOfWeekType(DaysOfWeekBaseType):
+    """
+https://msdn.microsoft.com/en-us/library/office/ee332417%28v=exchg.140%29.aspx
+    """
+    Day = 'Day'
+    Weekday = 'Weekday'
+    WeekendDay = 'WeekendDay'
+
+
+class DayOfWeekIndexType(BaseProperties):
+    """
+https://msdn.microsoft.com/en-us/library/office/aa581350(v=exchg.140).aspx
+    """
+    First = 'First'
+    Second = 'Second'
+    Third = 'Third'
+    Fourth = 'Fourth'
+    Last = 'Last'
+
+
+class MonthRecurrenceType(BaseProperties):
+    """
+https://msdn.microsoft.com/en-us/library/office/aa565486%28v=exchg.140%29.aspx
+    """
+    January = 'January'
+    February = 'February'
+    March = 'March'
+    April = 'April'
+    May = 'May'
+    June = 'June'
+    July = 'July'
+    August = 'August'
+    September = 'September'
+    October = 'October'
+    November = 'November'
+    December = 'December'
 
 
 class PhoneKey:

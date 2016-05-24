@@ -21,7 +21,13 @@
 import logging
 import pdb
 
-from item import Item, Field, FieldURI, ExtendedProperty, LastModifiedTime
+from item import (Item,
+                  Field,
+                  FieldURI,
+                  ExtendedProperty,
+                  LastModifiedTime,
+                  Categories,
+                  )
 from pyews.soap import SoapClient, unQName, QName_T
 from pyews.utils import pretty_xml
 from pyews.ews import mapitags
@@ -40,11 +46,13 @@ class CField(Field):
     def write_to_xml_update(self):
         _logger.debug("PROCESSED TAG %s : %s" % (self.tag, self.value))
         ats = ['%s="%s"' % (k, v) for k, v in self.attrib.iteritems() if v]
-        s = '<t:FieldURI FieldURI="%s"/>' % self.furi
+        s = '<t:SetItemField>'
+        s += '<t:FieldURI FieldURI="%s"/>' % self.furi
         s += '\n<t:Contact>'
         s += '\n  <t:%s %s>%s</t:%s>' % (self.tag, ' '.join(ats),
                                          escape(self.value), self.tag)
         s += '\n</t:Contact>'
+        s += '</t:SetItemField>'
 
         return s
 
@@ -297,16 +305,52 @@ class PostalAddress(CField):
     def key(self):
         return self.attrib['Key']
 
-    def write_to_xml_update(self):
-        ret = []
-        for field in self.children:
-            ret.append(field.write_to_xml())
-        return '\n'.join(ret)
+    # def write_to_xml_update(self):
+    #     ret = []
+    #     for field in self.children:
+    #         ret.append(field.write_to_xml())
+    #     return '\n'.join(ret)
 
     def populate_from_node(self, node):
         for child in node:
             tag = unQName(child.tag)
             getattr(self, self.tag_field_mapping[tag]).value = child.text
+
+    def write_to_xml_update(self, field):
+        field_class_name = field.__class__.__name__
+        s = '<t:SetItemField>'
+        s += '\n<t:IndexedFieldURI FieldURI="' \
+             'contacts:PhysicalAddress:%s"' % field_class_name
+        s += ' FieldIndex="%s"/>' % self.attrib['Key']
+        s += '\n<t:Contact>'
+        s += '\n  <t:PhysicalAddresses>'
+        s += '\n    <t:Entry Key="%s">%s</t:Entry>' % (
+            self.attrib['Key'],
+            field.write_to_xml_update2())
+        s += '\n  </t:PhysicalAddresses>'
+        s += '\n</t:Contact>'
+        s += '</t:SetItemField>'
+        return s
+
+    def write_to_xml_delete(self, field):
+        field_class_name = field.__class__.__name__
+        s = '<t:DeleteItemField>'
+        s += '\n<t:IndexedFieldURI FieldURI="' \
+             'contacts:PhysicalAddress:%s"' % field_class_name
+        s += ' FieldIndex="%s"/>' % self.attrib['Key']
+        s += '</t:DeleteItemField>'
+        return s
+
+    def update_or_delete(self):
+        ret = []
+        for field in self.children:
+            if field.value is None:
+                # delete
+                ret.append(self.write_to_xml_delete(field))
+            else:
+                # update
+                ret.append(self.write_to_xml_update(field))
+        return ''.join(ret)
 
 
 class PostalAddresses(CField):
@@ -350,93 +394,10 @@ class PostalAddresses(CField):
         http://stackoverflow.com/questions/13455697/
         updating-a-contacts-physical-address-with-php-ews
         """
-        ret = []
-        for addr in self.entries:
-            for field in addr.children:
-                # import pdb; pdb.set_trace()
-                field_class_name = field.__class__.__name__
-                if field.value is not None:
-                    s = ''
-                    s += '\n<t:IndexedFieldURI FieldURI="' \
-                         'contacts:PhysicalAddress:%s"' % field_class_name
-                    s += ' FieldIndex="%s"/>' % addr.attrib['Key']
-                    s += '\n<t:Contact>'
-                    s += '\n  <t:PhysicalAddresses>'
-                    s += '\n    <t:Entry Key="%s">%s</t:Entry>' % (
-                       addr.attrib['Key'],
-                       field.write_to_xml_update2())
-                    s += '\n  </t:PhysicalAddresses>'
-                    s += '\n</t:Contact>'
-                    ret.append(s)
-
-        t = '\n</t:SetItemField>\n<t:SetItemField>'
-        return t.join(ret)
+        return ''.join([entry.update_or_delete() for entry in self.entries])
 
     def write_to_xml_delete(self):
-        ret = []
-        for addr in self.entries:
-            for field in addr.children:
-                # import pdb; pdb.set_trace()
-                field_class_name = field.__class__.__name__
-                # if field.value is not None:
-                if field.value is None:
-                    s = '<t:DeleteItemField>'
-                    s += '\n<t:IndexedFieldURI FieldURI="' \
-                         'contacts:PhysicalAddress:%s"' % field_class_name
-                    s += ' FieldIndex="%s"/>' % addr.attrib['Key']
-                    # s += '\n<t:Contact>'
-                    # s += '\n  <t:PhysicalAddresses>'
-                    # s += '\n    <t:Entry Key="%s">%s</t:Entry>' % (
-                    #    addr.attrib['Key'],
-                    #    field.write_to_xml_update2())
-                    # s += '\n  </t:PhysicalAddresses>'
-                    # s += '\n</t:Contact>'
-                    s += '</t:DeleteItemField>'
-                    ret.append(s)
-                else:
-                    ret.append('<t:SetItemField>')
-                    ret.append(self.write_to_xml_update())
-                    ret.append('</t:SetItemField>')
-
-        # t = '\n</t:DeleteItemField>\n<t:DeleteItemField>'
-        return '\n'.join(ret)
-
-
-class Categories(CField):
-    class Category(CField):
-        def __init__(self, text=None):
-            CField.__init__(self, 'String', text)
-
-        def __str__(self):
-            return 'Category %s' % (self.value)
-
-    def __init__(self, node=None):
-        CField.__init__(self, 'Categories')
-        self.children = self.entries = []
-        if node is not None:
-            self.populate_from_node(node)
-
-    def populate_from_node(self, node):
-        for child in node:
-            categ = self.Category()
-            categ.value = child.text
-            self.entries.append(categ)
-
-    def already_exists(self, categ_str):
-        for entry in self.entries:
-            if entry.value == categ_str:
-                return True
-        return False
-
-    def add(self, categ_str):
-        if categ_str is not None:
-            if not self.already_exists(categ_str):
-                categ = self.Category()
-                categ.value = categ_str
-                self.entries.append(categ)
-
-    def has_updates(self):
-        return len(self.entries) > 0
+        return ''.join([entry.update_or_delete() for entry in self.entries])
 
 
 class EmailAddresses(CField):
@@ -457,6 +418,38 @@ class EmailAddresses(CField):
 
         def __str__(self):
             return 'Key: %8s  Address: %s' % (self.attrib['Key'], self.value)
+
+        def write_to_xml_update(self):
+            s = '<t:SetItemField>'
+            s += '\n<t:IndexedFieldURI FieldURI="contacts:EmailAddress"'
+            s += ' FieldIndex="%s"/>' % self.attrib['Key']
+            s += '\n<t:Contact>'
+            s += '\n  <t:EmailAddresses>'
+            s += '\n    <t:Entry Key="%s">%s</t:Entry>' % (self.attrib['Key'],
+                                                           escape(self.value))
+            s += '\n  </t:EmailAddresses>'
+            s += '\n</t:Contact>'
+            s += '</t:SetItemField>'
+            return s
+
+        def write_to_xml_delete(self):
+            field_class_name = self.__class__.__name__
+            s = '<t:DeleteItemField>'
+            s += '\n<t:IndexedFieldURI FieldURI="' \
+                 'contacts:EmailAddress:%s"' % field_class_name
+            s += ' FieldIndex="%s"/>' % self.attrib['Key']
+            s += '</t:DeleteItemField>'
+            return s
+
+        def update_or_delete(self):
+            ret = []
+            if self.value is None:
+                # delete
+                ret.append(self.write_to_xml_delete())
+            else:
+                # update
+                ret.append(self.write_to_xml_update())
+            return ''.join(ret)
 
     def __init__(self, node=None):
         CField.__init__(self, 'EmailAddresses')
@@ -484,47 +477,10 @@ class EmailAddresses(CField):
         return len(self.entries) > 0
 
     def write_to_xml_update(self):
-        ret = []
-        for email in self.entries:
-            if email.value is None:
-                continue
-            s = ''
-            s += '\n<t:IndexedFieldURI FieldURI="contacts:EmailAddress" '
-            s += 'FieldIndex="%s"/>' % email.attrib['Key']
-            s += '\n<t:Contact>'
-            s += '\n  <t:EmailAddresses>'
-            s += '\n    <t:Entry Key="%s">%s</t:Entry>' % (email.attrib['Key'],
-                                                           escape(email.value))
-            s += '\n  </t:EmailAddresses>'
-            s += '\n</t:Contact>'
-            ret.append(s)
-
-        t = '\n</t:SetItemField>\n<t:SetItemField>'
-        return t.join(ret)
+        return ''.join([entry.update_or_delete() for entry in self.entries])
 
     def write_to_xml_delete(self):
-        ret = []
-        for email in self.entries:
-            if email.value is None:
-                s = '<t:DeleteItemField>'
-                s += '\n<t:IndexedFieldURI FieldURI="' \
-                     'contacts:EmailAddress"'
-                s += ' FieldIndex="%s"/>' % email.attrib['Key']
-                # s += '\n<t:Contact>'
-                # s += '\n  <t:PhysicalAddresses>'
-                # s += '\n    <t:Entry Key="%s">%s</t:Entry>' % (
-                #    addr.attrib['Key'],
-                #    field.write_to_xml_update2())
-                # s += '\n  </t:PhysicalAddresses>'
-                # s += '\n</t:Contact>'
-                s += '</t:DeleteItemField>'
-                ret.append(s)
-            else:
-                ret.append('<t:SetItemField>')
-                ret.append(self.write_to_xml_update())
-                ret.append('</t:SetItemField>')
-
-        return '\n'.join(ret)
+        return ''.join([entry.update_or_delete() for entry in self.entries])
 
     def __str__(self):
         s = '%s Addresses: ' % len(self.entries)
@@ -544,6 +500,38 @@ class ImAddresses(CField):
 
         def key(self):
             return self.attrib['Key']
+
+        def write_to_xml_update(self):
+            s = '<t:SetItemField>'
+            s += '\n<t:IndexedFieldURI FieldURI="contacts:ImAddress"'
+            s += ' FieldIndex="%s"/>' % self.attrib['Key']
+            s += '\n<t:Contact>'
+            s += '\n  <t:ImAddresses>'
+            s += '\n    <t:Entry Key="%s">%s</t:Entry>' % (self.attrib['Key'],
+                                                           escape(self.value))
+            s += '\n  </t:ImAddresses>'
+            s += '\n</t:Contact>'
+            s += '</t:SetItemField>'
+            return s
+
+        def write_to_xml_delete(self):
+            field_class_name = self.__class__.__name__
+            s = '<t:DeleteItemField>'
+            s += '\n<t:IndexedFieldURI FieldURI="' \
+                 'contacts:ImAddress:%s"' % field_class_name
+            s += ' FieldIndex="%s"/>' % self.attrib['Key']
+            s += '</t:DeleteItemField>'
+            return s
+
+        def update_or_delete(self):
+            ret = []
+            if self.value is None:
+                # delete
+                ret.append(self.write_to_xml_delete())
+            else:
+                # update
+                ret.append(self.write_to_xml_update())
+            return ''.join(ret)
 
         def __str__(self):
             return 'Key: %8s  Address: %s' % (self.attrib['Key'], self.value)
@@ -574,46 +562,10 @@ class ImAddresses(CField):
         return len(self.entries) > 0
 
     def write_to_xml_update(self):
-        ret = []
-        for im in self.entries:
-            s = ''
-            s += '\n<t:IndexedFieldURI FieldURI="contacts:ImAddress" '
-            s += 'FieldIndex="%s"/>' % im.attrib['Key']
-            s += '\n<t:Contact>'
-            s += '\n  <t:ImAddresses>'
-            s += '\n    <t:Entry Key="%s">%s</t:Entry>' % (im.attrib['Key'],
-                                                           escape(im.value))
-            s += '\n  </t:ImAddresses>'
-            s += '\n</t:Contact>'
-            ret.append(s)
-
-        t = '\n</t:SetItemField>\n<t:SetItemField>'
-        return t.join(ret)
+        return ''.join([entry.update_or_delete() for entry in self.entries])
 
     def write_to_xml_delete(self):
-        ret = []
-        for email in self.entries:
-            if email.value is None:
-
-                s = '<t:DeleteItemField>'
-                s += '\n<t:IndexedFieldURI FieldURI="' \
-                     'contacts:ImAddress"'
-                s += ' FieldIndex="%s"/>' % email.attrib['Key']
-                # s += '\n<t:Contact>'
-                # s += '\n  <t:PhysicalAddresses>'
-                # s += '\n    <t:Entry Key="%s">%s</t:Entry>' % (
-                #    addr.attrib['Key'],
-                #    field.write_to_xml_update2())
-                # s += '\n  </t:PhysicalAddresses>'
-                # s += '\n</t:Contact>'
-                s += '</t:DeleteItemField>'
-                ret.append(s)
-            else:
-                ret.append('<t:SetItemField>')
-                ret.append(self.write_to_xml_update())
-                ret.append('</t:SetItemField>')
-
-        return '\n'.join(ret)
+        return ''.join([entry.update_or_delete() for entry in self.entries])
 
     def __str__(self):
         s = '%s Addresses: ' % len(self.entries)
@@ -633,6 +585,38 @@ class PhoneNumbers(CField):
 
         def key(self):
             return self.attrib['Key']
+
+        def write_to_xml_update(self):
+            s = '<t:SetItemField>'
+            s += '<t:IndexedFieldURI FieldURI="contacts:PhoneNumber"'
+            s += ' FieldIndex="%s" />' % (self.attrib['Key'])
+            s += '\n<t:Contact>'
+            s += '\n  <t:PhoneNumbers>'
+            s += '\n    <t:Entry Key="%s">%s</t:Entry>' % (self.attrib['Key'],
+                                                           escape(self.value))
+            s += '\n  </t:PhoneNumbers>'
+            s += '\n</t:Contact>'
+            s += '</t:SetItemField>'
+            return s
+
+        def write_to_xml_delete(self):
+            field_class_name = self.__class__.__name__
+            s = '<t:DeleteItemField>'
+            s += '\n<t:IndexedFieldURI FieldURI="' \
+                 'contacts:PhoneNumber:%s"' % field_class_name
+            s += ' FieldIndex="%s"/>' % self.attrib['Key']
+            s += '</t:DeleteItemField>'
+            return s
+
+        def update_or_delete(self):
+            ret = []
+            if self.value is None:
+                # delete
+                ret.append(self.write_to_xml_delete())
+            else:
+                # update
+                ret.append(self.write_to_xml_update())
+            return ''.join(ret)
 
         def __str__(self):
             return 'Key: %8s  Number: %s' % (self.attrib['Key'], self.value)
@@ -664,46 +648,10 @@ class PhoneNumbers(CField):
         return len(self.entries) > 0
 
     def write_to_xml_update(self):
-        ret = []
-        for phone in self.entries:
-            s = ''
-            s += '\n<t:IndexedFieldURI FieldURI="contacts:PhoneNumber" '
-            s += 'FieldIndex="%s"/>' % phone.attrib['Key']
-            s += '\n<t:Contact>'
-            s += '\n  <t:PhoneNumbers>'
-            s += '\n    <t:Entry Key="%s">%s</t:Entry>' % (phone.attrib['Key'],
-                                                           phone.value)
-            s += '\n  </t:PhoneNumbers>'
-            s += '\n</t:Contact>'
-            ret.append(s)
-
-        t = '\n</t:SetItemField>\n<t:SetItemField>'
-        return t.join(ret)
+        return ''.join([entry.update_or_delete() for entry in self.entries])
 
     def write_to_xml_delete(self):
-        ret = []
-        for email in self.entries:
-            if email.value is None:
-
-                s = '<t:DeleteItemField>'
-                s += '\n<t:IndexedFieldURI FieldURI="' \
-                     'contacts:PhoneNumber"'
-                s += ' FieldIndex="%s"/>' % email.attrib['Key']
-                # s += '\n<t:Contact>'
-                # s += '\n  <t:PhysicalAddresses>'
-                # s += '\n    <t:Entry Key="%s">%s</t:Entry>' % (
-                #    addr.attrib['Key'],
-                #    field.write_to_xml_update2())
-                # s += '\n  </t:PhysicalAddresses>'
-                # s += '\n</t:Contact>'
-                s += '</t:DeleteItemField>'
-                ret.append(s)
-            else:
-                ret.append('<t:SetItemField>')
-                ret.append(self.write_to_xml_update())
-                ret.append('</t:SetItemField>')
-
-        return '\n'.join(ret)
+        return ''.join([entry.update_or_delete() for entry in self.entries])
 
     def __str__(self):
         s = '%s Numbers: ' % len(self.entries)
@@ -726,18 +674,40 @@ class BusinessHomePage(CField):
 ##
 
 
-class PersonalHomePage(ExtendedProperty):
+class ContactExtendedProperty(ExtendedProperty):
+    def __init__(self, node=None, dis_psetid=None, psetid=None,
+                 ptag=None, pname=None, pid=None, ptype=None):
+        ExtendedProperty.__init__(self, node=node, dis_psetid=dis_psetid,
+                                  psetid=psetid, ptag=ptag, pname=pname,
+                                  pid=pid, ptype=ptype)
+
+    def write_to_xml_update(self):
+        s = '<t:SetItemField>'
+        ef = self.efuri.write_to_xml()
+        s += ef
+        s += '\n<t:Contact>'
+        s += '\n  <t:ExtendedProperty>'
+        s += '\n      %s' % ef
+        s += '\n      <t:Value>%s</t:Value>' % escape(str(self.value))
+        s += '\n  </t:ExtendedProperty>'
+        s += '\n</t:Contact>'
+        s += '</t:SetItemField>'
+
+        return s
+
+
+class PersonalHomePage(ContactExtendedProperty):
 
     def __init__(self, node=None, text=None):
         pid = mapitags.PROP_ID(mapitags.PR_PERSONAL_HOME_PAGE)
         ptype = mapitags.PROP_TYPE(mapitags.PR_PERSONAL_HOME_PAGE)
-        ExtendedProperty.__init__(self, node=node, ptag=pid,
-                                  ptype=MapiPropertyTypeType[ptype])
+        ContactExtendedProperty.__init__(self, node=node, ptag=pid,
+                                         ptype=MapiPropertyTypeType[ptype])
         self.val.value = text
 
     def write_to_xml(self):
         if self.val.value is not None:
-            return ExtendedProperty.write_to_xml(self)
+            return ContactExtendedProperty.write_to_xml(self)
         else:
             return ''
 
@@ -745,18 +715,18 @@ class PersonalHomePage(ExtendedProperty):
         return self.val.value
 
 
-class Gender(ExtendedProperty):
+class Gender(ContactExtendedProperty):
 
     def __init__(self, node=None, text=GenderType.Unspecified):
         ptag = mapitags.PROP_ID(mapitags.PR_GENDER)
         ptype = mapitags.PROP_TYPE(mapitags.PR_GENDER)
-        ExtendedProperty.__init__(self, node=node, ptag=ptag,
-                                  ptype=MapiPropertyTypeType[ptype])
+        ContactExtendedProperty.__init__(self, node=node, ptag=ptag,
+                                         ptype=MapiPropertyTypeType[ptype])
         self.val.value = str(text)
 
     def write_to_xml(self):
         if self.val.value is not None:
-            return ExtendedProperty.write_to_xml(self)
+            return ContactExtendedProperty.write_to_xml(self)
         else:
             return ''
 
@@ -783,7 +753,7 @@ class Contact(Item):
                  resp_node=None, mapped_data=None):
         Item.__init__(self, service, parent_fid, resp_node, tag='Contact')
 
-        self.categories = Categories()
+        # self.categories = Categories()
         self.file_as = FileAs()
         self.file_as_mapping = FileAsMapping()
         self.alias = Alias()
@@ -1017,17 +987,17 @@ class Contact(Item):
         # this contact for CreateItem and update operations. The order of
         # these fields is critical. I know, it's crazy.
         self.children = [self.notes] + self.eprops + [
-             self.categories,
-             self.gender,
-             self.personal_home_page, self.file_as, self.file_as_mapping,
-             self.display_name, cn.given_name, cn.initials,
-             cn.middle_name, cn.nickname, self.company_name,
-             self.emails, self.physical_addresses, self.phones,
-             self.assistant_name,
-             self.birthday, self.business_home_page,
-             self.department, self.ims, self.job_title,
-             self.manager, self.postal_address_index, self.profession,
-             self.spouse_name, cn.surname, self.anniversary, self.alias]
+            self.categories,
+            self.gender,
+            self.personal_home_page, self.file_as, self.file_as_mapping,
+            self.display_name, cn.given_name, cn.initials,
+            cn.middle_name, cn.nickname, self.company_name,
+            self.emails, self.physical_addresses, self.phones,
+            self.assistant_name,
+            self.birthday, self.business_home_page,
+            self.department, self.ims, self.job_title,
+            self.manager, self.postal_address_index, self.profession,
+            self.spouse_name, cn.surname, self.anniversary, self.alias]
 
         return self.children
 

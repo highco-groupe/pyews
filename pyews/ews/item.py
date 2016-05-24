@@ -24,12 +24,17 @@ import pyews.soap as soap
 import pyews.utils as utils
 from pyews.ews import mapitags
 from pyews.ews.data import MapiPropertyTypeType, MapiPropertyTypeTypeInv
-
+from pyews.ews.data import (SensitivityType,
+                            ImportanceType,
+                            )
 import xml.etree.ElementTree as ET
 from xml.sax.saxutils import escape
 import logging
 import pdb
+
 gnd = SoapClient.get_node_detail
+_logger = logging.getLogger(__name__)
+EXCHANGE_DATETIME_FORMAT = '%Y-%m-%dT%H:%M:%SZ'
 
 
 class ReadOnly:
@@ -51,6 +56,9 @@ class ReadOnly:
     def write_to_xml(self):
         return ''
 
+    def write_to_xml_update(self):
+        return ''
+
 
 class Field:
 
@@ -59,16 +67,17 @@ class Field:
     """
     __metaclass__ = ABCMeta
 
-    def __init__(self, tag=None, text=None):
+    def __init__(self, tag=None, text=None, boolean=False):
         self.tag = tag
         self.value = text
         self.attrib = {}
         self.children = []
         self.read_only = False
+        self.boolean = boolean
 
         # furi is used when this field needs to be used as part of an update
         # item method
-        self.furi = ('items:%s' % tag) if tag else None
+        self.furi = ('item:%s' % tag) if tag else None
 
     @property
     def value(self):
@@ -86,7 +95,13 @@ class Field:
         return ' '.join(ats)
 
     def value_as_xml(self):
-        return escape(unicode(self.value)) if self.value is not None else ''
+        if self.value is not None:
+            if self.boolean:
+                value = escape(unicode(self.value).lower())
+            else:
+                value = escape(unicode(self.value))
+            return value
+        return ''
 
     def children_as_xml(self):
         self.children = self.get_children()
@@ -125,7 +140,21 @@ class Field:
         return ret
 
     def write_to_xml_update(self):
-        pass
+        if (self.value is not None):
+
+            text = self.value_as_xml()
+            ats = self.atts_as_xml()
+
+            ret = '<t:SetItemField>'
+            ret += '<t:FieldURI FieldURI="%s"/>' % self.furi
+            ret += '<t:Item>'
+            ret += '<t:%s %s>%s</t:%s>' % (self.tag, ats, text, self.tag)
+            ret += '</t:Item>'
+            ret += '</t:SetItemField>'
+
+            return ret
+        else:
+            return ''
 
     def has_updates(self):
         return not (self.value is None or
@@ -192,6 +221,104 @@ class PropVariant:
     NAMED_STR = 3
 
 
+class Content(Field):
+    def __init__(self, text=None):
+        Field.__init__(self, 'Content', text)
+
+
+class FileAttachment(Field):
+    """
+https://msdn.microsoft.com/en-us/library/office/aa580492(v=exchg.140).aspx
+    """
+
+    class AttachmentId(Field):
+        """
+    https://msdn.microsoft.com/en-us/library/office/aa580987(v=exchg.140).aspx
+        """
+        def __init__(self, text=None):
+            Field.__init__(self, 'AttachmentId', text)
+
+    class Name(Field):
+        def __init__(self, text=None):
+            Field.__init__(self, 'Name', text)
+
+    class ContentType(Field):
+        def __init__(self, text=None):
+            Field.__init__(self, 'ContentType', text)
+
+    def __init__(self, service, node=None):
+        Field.__init__(self, 'FileAttachment')
+        self.service = service
+
+        self.attachment_id = self.AttachmentId(self.service)
+        self.name = self.Name()
+        self.content_type = self.ContentType()
+        self.content = Content()
+
+        self.tag_field_mapping = {
+            'AttachmentId': 'attachment_id',
+            'Name': 'name',
+            'ContentType': 'content_type',
+            'Content': 'content',
+        }
+
+        self.children = [self.name, self.content]
+
+    def populate_from_node(self, node):
+        for child in node:
+            tag = unQName(child.tag)
+            if tag == self.attachment_id.tag:
+                self.attachment_id.set(child.attrib['Id'])
+            elif tag == self.content.tag:
+                self.content.set(child.text)
+            elif tag == self.name.tag:
+                self.name.set(child.text)
+            else:
+                continue
+                # getattr(self, self.tag_field_mapping[tag]).value = child.text
+
+
+class Attachments(Field):
+    """
+https://msdn.microsoft.com/en-us/library/office/aa564869(v=exchg.140).aspx
+
+<t:Attachments>
+    <t:FileAttachment>
+        <t:AttachmentId Id="AAAQAGMxb2Rvb0BoaWdoY2..."/>
+        <t:Name>CalendarItem.xml</t:Name>
+        <t:ContentType>text/xml</t:ContentType>
+    </t:FileAttachment>
+</t:Attachments>
+    """
+    def __init__(self, service, node=None):
+        Field.__init__(self, 'Attachments')
+        self.service = service
+        self.entries = []
+        self.children = self.get_children()
+        if node is not None:
+            self.populate_from_node(service, node)
+
+    def add(self, att_obj):
+        self.entries.append(att_obj)
+
+    def get_children(self):
+        return self.entries
+
+    def populate_from_node(self, service, node):
+        for child in node:
+            att = FileAttachment(service)
+            att.populate_from_node(child)
+            if att.content.value is None:
+                # retrieve attachment and set content with it
+                cnt = service.GetAttachments(
+                    [att.attachment_id.value])
+                att.content.set(cnt[0].value)
+            self.entries.append(att)
+
+    def write_to_xml(self):
+        return ''
+
+
 class ExtendedProperty(Field):
 
     class ExtendedFieldURI(Field):
@@ -249,7 +376,6 @@ class ExtendedProperty(Field):
         If node is not None, it should be a parsed XML element pointing to an
         Extended Property element
         """
-
         # This guy needs to be here as we have overriden the .value()
         self.val = self.Value()
 
@@ -323,12 +449,12 @@ class ExtendedProperty(Field):
 
         ef = self.efuri.write_to_xml()
         s += ef
-        s += '\n<t:Contact>'
+        s += '\n<t:Item>'
         s += '\n  <t:ExtendedProperty>'
         s += '\n      %s' % ef
         s += '\n      <t:Value>%s</t:Value>' % escape(str(self.value))
         s += '\n  </t:ExtendedProperty>'
-        s += '\n</t:Contact>'
+        s += '\n</t:Item>'
 
         return s
 
@@ -359,8 +485,7 @@ class ExtendedProperty(Field):
 
         if (self.efuri.attrib['PropertyTag'] is None and
                 self.efuri.attrib['PropertyType'] is not None and
-                (
-                 self.efuri.attrib['PropertySetId'] is not None or
+                (self.efuri.attrib['PropertySetId'] is not None or
                  self.efuri.attrib['DistinguishedPropertySetId'] is not None
                  ) and
                 self.efuri.attrib['PropertyName'] is None and
@@ -369,8 +494,7 @@ class ExtendedProperty(Field):
 
         if (self.efuri.attrib['PropertyTag'] is None and
                 self.efuri.attrib['PropertyType'] is not None and
-                (
-                 self.efuri.attrib['PropertySetId'] is not None or
+                (self.efuri.attrib['PropertySetId'] is not None or
                  self.efuri.attrib['DistinguishedPropertySetId'] is not None
                  ) and
                 self.efuri.attrib['PropertyName'] is not None and
@@ -456,9 +580,7 @@ class ExtendedProperty(Field):
         """
 
         tp = (len(xml_node.attrib) == 3 and
-              (
-               (
-                'PropertySetId' in xml_node.attrib or
+              (('PropertySetId' in xml_node.attrib or
                 'DistinguishedPropertySetId' in xml_node.attrib
                 ) and
                'PropertyId' in xml_node.attrib and
@@ -490,9 +612,7 @@ class ExtendedProperty(Field):
         """
 
         tp = (len(xml_node.attrib) == 3 and
-              (
-               (
-                'PropertySetId' in xml_node.attrib or
+              (('PropertySetId' in xml_node.attrib or
                 'DistinguishedPropertySetId' in xml_node.attrib
                 ) and
                'PropertyName' in xml_node.attrib and
@@ -524,6 +644,112 @@ class LastModifiedTime(ReadOnly, ExtendedProperty):
         ExtendedProperty.__init__(self, node=node, ptag=ptag, ptype=ptype)
 
 
+class Categories(Field):
+    class Category(Field):
+        def __init__(self, text=None):
+            Field.__init__(self, 'String', text)
+
+        def __str__(self):
+            return 'Category %s' % (self.value)
+
+    def __init__(self, node=None):
+        Field.__init__(self, 'Categories')
+        self.children = self.entries = []
+        if node is not None:
+            self.populate_from_node(node)
+
+    def populate_from_node(self, node):
+        for child in node:
+            self.add(child.text)
+
+    def already_exists(self, categ_str):
+        for entry in self.entries:
+            if entry.value == categ_str:
+                return True
+        return False
+
+    def add(self, categ_str):
+        if categ_str is not None:
+            if not self.already_exists(categ_str):
+                categ = self.Category()
+                categ.value = categ_str
+                self.entries.append(categ)
+
+    def has_updates(self):
+        return len(self.entries) > 0
+
+
+class Subject(Field):
+    """
+https://msdn.microsoft.com/en-us/library/office/aa565100(v=exchg.140).aspx
+    """
+    def __init__(self, text=None):
+        Field.__init__(self, 'Subject', text)
+
+
+class HasAttachments(Field):
+    """
+    """
+    def __init__(self, text=None):
+        Field.__init__(self, 'HasAttachments', text)
+
+
+class Sensitivity(Field):
+    """
+https://msdn.microsoft.com/en-us/library/office/aa565687(v=exchg.140).aspx
+    """
+    def __init__(self, text=None):
+        val_list = SensitivityType._props_values()
+        err = 'Sensitivity is not in the list %s' % val_list
+        assert (text is None or text in val_list), err
+        Field.__init__(self, 'Sensitivity', text)
+
+
+class Importance(Field):
+    """
+https://msdn.microsoft.com/en-us/library/office/aa563467(v=exchg.140).aspx
+    """
+    def __init__(self, text=None):
+        val_list = ImportanceType._props_values()
+        err = 'Importance is not in the list %s' % val_list
+        assert (text is None or text in val_list), err
+        Field.__init__(self, 'Importance', text)
+
+
+class Body(Field):
+    """
+https://msdn.microsoft.com/en-us/library/office/aa581015(v=exchg.140).aspx
+    """
+    def __init__(self, type='HTML', text=None):
+        Field.__init__(self, 'Body', text)
+        self.text_type = type
+        self.attrib['BodyType'] = self.text_type
+
+
+class ReminderIsSet(Field):
+    """
+https://msdn.microsoft.com/en-us/library/office/aa566410%28v=exchg.140%29.aspx
+    """
+    def __init__(self, text=None):
+        Field.__init__(self, 'ReminderIsSet', text, boolean=True)
+
+
+class ReminderDueBy(Field):
+    """
+https://msdn.microsoft.com/en-us/library/office/aa565894(v=exchg.140).aspx
+    """
+    def __init__(self, text=None):
+        Field.__init__(self, 'ReminderDueBy', text)
+
+
+class ReminderMinutesBeforeStart(Field):
+    """
+https://msdn.microsoft.com/en-us/library/office/aa581305(v=exchg.140).aspx
+    """
+    def __init__(self, text=None):
+        Field.__init__(self, 'ReminderMinutesBeforeStart', text)
+
+
 class Item(Field):
 
     """
@@ -533,10 +759,12 @@ class Item(Field):
 
     __metaclass__ = ABCMeta
 
-    def __init__(self, service, parent_fid=None, resp_node=None, tag='Item'):
+    def __init__(self, service, parent_fid=None, resp_node=None, tag='Item',
+                 additional_properties=None,
+                 additional_boolean_fields_tag=None):
         Field.__init__(self, tag=tag)
 
-        self.service = service                       # Exchange service object
+        self.service = service  # Exchange service object
         self.resp_node = resp_node
 
         self.parent_fid = ParentFolderId(parent_fid)
@@ -547,7 +775,52 @@ class Item(Field):
         self.item_class = ItemClass()
         self.change_key = ChangeKey()
         self.created_time = DateTimeCreated()
-        self.last_modified_time = None
+        self.last_modified_time = LastModifiedTime()
+
+        self.categories = Categories()
+        self.sensitivity = Sensitivity()
+        self.importance = Importance()
+        self.subject = Subject()
+        self.body = Body()
+        self.attachments = Attachments(service)
+        self.has_attachments = HasAttachments()
+        self.reminder_due_by = ReminderDueBy()
+        self.is_reminder_set = ReminderIsSet()
+        self.reminder_minutes_before_start = ReminderMinutesBeforeStart()
+
+        self.tag_property_map = [
+            (self.itemid.tag, self.itemid),
+            (self.item_class.tag, self.item_class),
+            (self.parent_fid.tag, self.parent_fid),
+            (self.created_time.tag, self.created_time),
+            (self.last_modified_time.tag, self.last_modified_time),
+            (self.categories.tag, self.categories),
+            (self.sensitivity.tag, self.sensitivity),
+            (self.importance.tag, self.importance),
+            (self.subject.tag, self.subject),
+            (self.body.tag, self.body),
+            (self.attachments.tag, self.attachments),
+            (self.has_attachments.tag, self.has_attachments),
+
+            (self.reminder_due_by.tag, self.reminder_due_by),
+            (self.is_reminder_set.tag, self.is_reminder_set),
+            (self.reminder_minutes_before_start.tag,
+             self.reminder_minutes_before_start),
+        ]
+        if additional_properties is not None:
+            self.tag_property_map += additional_properties
+
+        self.mapping_dict_tag_obj = dict(self.tag_property_map)
+
+        # Tags starting with 'Is' are considered as Boolean fields
+        # for other fields that must be considered as Boolean ones,
+        # add them in the list below
+        self.boolean_fields_tag = [
+            self.is_reminder_set.tag,
+            self.has_attachments.tag
+        ]
+        if additional_boolean_fields_tag is not None:
+            self.boolean_fields_tag += additional_boolean_fields_tag
 
         self.eprops = []
         self.eprops_tagged = {}
@@ -573,6 +846,21 @@ class Item(Field):
     # Next, the non-abstract external methods
     ##
 
+    def _get_atts(self, child):
+        return []
+
+    def _get_sets(self, child):
+        if child.has_updates():
+            return [child]
+        else:
+            return []
+
+    def _get_dels(self, child):
+        if not child.has_updates():
+            return [child]
+        else:
+            return []
+
     def get_updates(self):
         """
         Returns a list of child elements that need to be included
@@ -580,18 +868,18 @@ class Item(Field):
         dels)
         """
 
+        atts = []
         sets = []
         dels = []
 
         for child in self.get_children():
-            if child.has_updates():
-                sets.append(child)
-            else:
-                dels.append(child)
+            atts.extend(self._get_atts(child))
+            sets.extend(self._get_sets(child))
+            dels.extend(self._get_dels(child))
 
         # print 'Sets: ', sets
         # print 'Dels: ', dels
-        return [], sets, dels
+        return atts, sets, dels
 
     def get_extended_properties(self):
         return self.eprops
@@ -704,22 +992,94 @@ class Item(Field):
         r = elem.find(node)
         return r.value if r else None
 
+    def _process_tag(self, child, tag):
+        if tag == 'ItemId':
+            self.itemid.set(child.attrib['Id'])
+            self.change_key.set(child.attrib['ChangeKey'])
+        elif tag == 'ParentFolderId':
+            self.parent_fid = ParentFolderId(child.attrib['Id'])
+            self.parent_fck = ParentFolderChangeKey(
+                child.attrib['ChangeKey'])
+        elif tag == 'Body':
+            # check text type (BodyType attribute on Body tag)
+            attribs = child.attrib
+            self.mapping_dict_tag_obj[tag].text_type = (
+                attribs.get('BodyType', 'HTML')
+            )
+            setattr(self.mapping_dict_tag_obj[tag],
+                    'value',
+                    child.text)
+        elif tag == 'Categories':
+            self.categories.add(child.text)
+        elif tag == 'Attachments':
+            self.attachments.populate_from_node(self.service, child)
+        elif tag in self.boolean_fields_tag or tag.startswith('Is'):
+            # boolean
+            setattr(self.mapping_dict_tag_obj[tag],
+                    'value',
+                    child.text == 'true')
+        else:
+            return False
+        return True
+
     def _init_base_fields_from_resp(self, rnode):
         """Return a reference to the parsed Element object for response after
         snarfing all the common fields."""
 
         for child in rnode:
             tag = unQName(child.tag)
-            if tag == 'ItemId':
-                self.itemid.set(child.attrib['Id'])
-                self.change_key.set(child.attrib['ChangeKey'])
-            elif tag == 'ParentFolderId':
-                self.parent_fid = ParentFolderId(child.attrib['Id'])
-                self.parent_fck = ParentFolderChangeKey(
-                    child.attrib['ChangeKey'])
-            elif tag == 'ItemClass':
-                self.item_class = ItemClass(child.text)
-            elif tag == 'LastModifiedTime':
-                self.last_modified_time = LastModifiedTime(child.text)
-            elif tag == 'DateTimeCreated':
-                self.created_time = DateTimeCreated(child.text)
+            # if tag == 'ItemId':
+            #     import pdb; pdb.set_trace()
+            if tag in self.mapping_dict_tag_obj:
+                res = self._process_tag(child, tag)
+                if not res:
+                    setattr(self.mapping_dict_tag_obj[tag],
+                            'value',
+                            child.text)
+
+            elif tag == 'ExtendedProperty':
+                self.add_extended_property(node=child)
+            else:
+                _logger.warning(
+                    'Trying to instanciate an unknown field %s' % tag)
+
+# <Item>
+#    <MimeContent/>
+#    <ItemId/>
+#    <ParentFolderId/>
+#    <ItemClass/>
+#    <Subject/>
+#    <Sensitivity/>
+#    <Body/>
+#    <Attachments/>
+#    <DateTimeReceived/>
+#    <Size/>
+#    <Categories/>
+#    <Importance/>
+#    <InReplyTo/>
+#    <IsSubmitted/>
+#    <IsDraft/>
+#    <IsFromMe/>
+#    <IsResend/>
+#    <IsUnmodified/>
+#    <InternetMessageHeaders/>
+#    <DateTimeSent/>
+#    <DateTimeCreated/>
+#    <ResponseObjects/>
+#    <ReminderDueBy/>
+#    <ReminderIsSet/>
+#    <ReminderMinutesBeforeStart/>
+#    <DisplayCc/>
+#    <DisplayTo/>
+#    <HasAttachments/>
+#    <ExtendedProperty/>
+#    <Culture/>
+#    <EffectiveRights/>
+#    <LastModifiedName/>
+#    <LastModifiedTime/>
+#    <IsAssociated/>
+#    <WebClientReadFormQueryString/>
+#    <WebClientEditFormQueryString/>
+#    <ConversationId/>
+#    <UniqueBody/>
+# </Item>
