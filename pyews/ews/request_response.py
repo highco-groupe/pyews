@@ -60,7 +60,12 @@ class Request(object):
     def request_server(self, debug=True):
         # pdb.set_trace()
         r = self.ews.loader.load(self.template).generate(**self.kwargs)
-        print r
+        # warning : this way of debugging generates :
+        # IOError: [Errno 5] Input/output error
+        # while pyews is executed by cron from Odoo
+
+        #print r
+
         r = utils.pretty_xml(r)
         # uncomment next line to see request sent to exchange server
 
